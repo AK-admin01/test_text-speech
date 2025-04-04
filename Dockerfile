@@ -1,40 +1,33 @@
-# Use a slim Python base image
-FROM python:3.9-slim as builder
+# Dockerfile
+FROM python:3.9-slim
 
-# Install build dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc python-dev && \
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# Create and activate virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Final stage with minimal footprint
-FROM python:3.9-slim
-
-# Copy only necessary files from builder
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Set up the application
-WORKDIR /app
-COPY . .
-
-# Serverless optimization configurations
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONFAULTHANDLER=1 \
-    PYTHONHASHSEED=random \
-    PIP_NO_CACHE_DIR=off \
-    PIP_DISABLE_PIP_VERSION_CHECK=on \
-    PIP_DEFAULT_TIMEOUT=100
+# Copy only necessary files
+COPY kokoro.py .
+COPY utils.py .
+COPY main.py .
+COPY handler.py .
 
 # Pre-download models to reduce cold start time
-RUN python -c "from kokoro import preload_models; preload_models()"
+RUN python -c "from kokoro import Kokoro; Kokoro().load_models()"
 
-# Use Gunicorn with optimized settings for serverless
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "1", "--timeout", "0", "app.main:app"]
+# FastAPI server configuration
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+
+EXPOSE $PORT
+
+# Use gunicorn as production server
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--worker-class", "uvicorn.workers.UvicornWorker", "--timeout", "120", "main:app"]
