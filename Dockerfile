@@ -6,8 +6,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    libsm6 \
-    libxext6 \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -15,19 +14,21 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only necessary files
-COPY kokoro.py .
-COPY utils.py .
-COPY main.py .
+#COPY app/ ./app/
+#COPY models/ ./models/
+#COPY main.py .
 COPY handler.py .
 
-# Pre-download models to reduce cold start time
-RUN python -c "from kokoro import Kokoro; Kokoro().load_models()"
-
-# FastAPI server configuration
+# Optimize for serverless
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
+ENV PYTHONFAULTHANDLER=1
+ENV PYTHONHASHSEED=random
 
-EXPOSE $PORT
+# Pre-download models during build if possible
+# (Add commands here to initialize models during build)
 
-# Use gunicorn as production server
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--worker-class", "uvicorn.workers.UvicornWorker", "--timeout", "120", "main:app"]
+# Health check for RunPod
+HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

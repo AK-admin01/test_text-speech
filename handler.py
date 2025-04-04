@@ -1,45 +1,79 @@
-import runpod
+
+import io
 import time
-import re
 import json
-import sys
+from typing import Dict, Any
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-def text_to_speech_simulator(text, chunk_size=5, delay=0.5):
-    words = re.findall(r'\w+', text)
-    
-    for i in range(0, len(words), chunk_size):
-        chunk = words[i:i+chunk_size]
-        audio_chunk = f"Audio chunk {i//chunk_size + 1}: {' '.join(chunk)}"
-        time.sleep(delay)  # Simulate processing time
-        yield audio_chunk
+app = FastAPI()
 
-def generator_handler(job):
-    job_input = job['input']
-    text = job_input.get('text', "Welcome to RunPod's text-to-speech simulator!")
-    chunk_size = job_input.get('chunk_size', 5)
-    delay = job_input.get('delay', 0.5)
-    
-    print(f"TTS Simulator | Starting job {job['id']}")
-    print(f"Processing text: {text}")
-    
-    for audio_chunk in text_to_speech_simulator(text, chunk_size, delay):
-        yield {"status": "processing", "chunk": audio_chunk}
-    
-    yield {"status": "completed", "message": "Text-to-speech conversion completed"}
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "default"
+    format: str = "wav"
+    stream: bool = False
 
-if __name__ == "__main__":
-    if "--test_input" in sys.argv:
-        test_input_index = sys.argv.index("--test_input")
-        if test_input_index + 1 < len(sys.argv):
-            test_input_json = sys.argv[test_input_index + 1]
-            try:
-                job = json.loads(test_input_json)
-                gen = generator_handler(job)
-                for item in gen:
-                    print(json.dumps(item))
-            except json.JSONDecodeError:
-                print("Error: Invalid JSON in test_input")
+@app.post("/generate")
+async def generate_speech(request: Dict[str, Any]):
+    """
+    RunPod serverless handler for TTS generation
+    """
+    try:
+        # Parse input
+        tts_request = TTSRequest(**request.get("input", {}))
+        
+        # Start timer for cold start metrics
+        start_time = time.time()
+        
+        # Initialize TTS engine (this would be replaced with actual Kokoro initialization)
+        # For cold start optimization, we might want to keep this warm
+        from app.tts_engine import KokoroTTS
+        tts_engine = KokoroTTS.get_instance()
+        
+        # Generate audio
+        if tts_request.stream:
+            # Stream the audio as it's being generated
+            def audio_stream():
+                for chunk in tts_engine.generate_stream(
+                    text=tts_request.text,
+                    voice=tts_request.voice
+                ):
+                    yield chunk
+            
+            return {
+                "output": {
+                    "audio_stream": audio_stream(),
+                    "content_type": f"audio/{tts_request.format}",
+                    "metrics": {
+                        "generation_time": time.time() - start_time,
+                        "cold_start": False  # Would need actual detection
+                    }
+                }
+            }
         else:
-            print("Error: --test_input requires a JSON string argument")
-    else:
-        runpod.serverless.start({"handler": generator_handler})
+            # Generate complete audio file
+            audio_data = tts_engine.generate(
+                text=tts_request.text,
+                voice=tts_request.voice,
+                format=tts_request.format
+            )
+            
+            return {
+                "output": {
+                    "audio": audio_data.decode('latin1'),  # For JSON serialization
+                    "content_type": f"audio/{tts_request.format}",
+                    "metrics": {
+                        "generation_time": time.time() - start_time,
+                        "cold_start": False  # Would need actual detection
+                    }
+                }
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
